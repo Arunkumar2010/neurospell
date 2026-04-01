@@ -27,6 +27,10 @@ class SpellCorrector:
             st.error(f"Error loading corpus from {source}: {e}")
             return []
 
+    def normalize_word(self, word):
+        """Reduces sequences of 3 or more repeated characters to 2 (e.g., 'heelllooooo' -> 'helloo')."""
+        return re.sub(r'(.)\1{2,}', r'\1\1', word)
+
     def P(self, word):
         """Probability of 'word'."""
         return self.word_counts[word] / self.total_words if self.total_words > 0 else 0
@@ -66,6 +70,11 @@ class SpellCorrector:
             word = word.lower()
             if word in self.word_counts:
                 return word, 1.0, False
+            
+            # Apply normalization for unknown words with repeated characters
+            normalized = self.normalize_word(word)
+            if normalized != word:
+                word = normalized
             
             candidates = self.candidates(word)
             if not candidates:
