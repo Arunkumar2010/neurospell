@@ -1,0 +1,9 @@
+streamlit
+transformers
+torch
+nltk
+textblob
+pandas
+scikit-learn
+language_tool_python==3.3.0
+requests
