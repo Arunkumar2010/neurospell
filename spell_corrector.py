@@ -1,109 +1,95 @@
-import pandas as pd
 import re
+from collections import Counter
+import streamlit as st
+import requests
+import os
 
-def highlight_corrected_text(original_text, corrections):
-    """
-    Highlights corrected words in Cyberpunk style.
-    """
-    words = original_text.split()
-    highlighted_words = []
-    
-    # Map index to correction for precise word matching
-    # Note: This is simpler than matching by word value to avoid double-highlighting
-    correction_map = {c['original'].lower(): c for c in corrections}
-    
-    for word in words:
-        clean_word = re.sub(r'[^\w\s]', '', word).lower()
-        if clean_word in correction_map:
-            c = correction_map[clean_word]
-            corrected = c['corrected']
-            error_type = c['type']
-            
-            # Preserve punctuation
-            punc_start = re.search(r'^[^\w\s]+', word)
-            punc_end = re.search(r'[^\w\s]+$', word)
-            prefix = punc_start.group() if punc_start else ""
-            suffix = punc_end.group() if punc_end else ""
-            
-            orig_html = f"<span style='color:#ff4444;text-decoration:line-through;font-size:0.8em;margin-right:4px;'>{clean_word}</span>"
-            
-            if error_type == "Real-word":
-                color = "#7b2fff"
+class SpellCorrector:
+    def __init__(self, corpus_path):
+        self.words = self._load_corpus(corpus_path)
+        self.word_counts = Counter(self.words)
+        self.total_words = sum(self.word_counts.values())
+
+    @st.cache_data
+    def _load_corpus(_self, source):
+        """Loads and tokenizes the corpus from a local path or URL."""
+        try:
+            if str(source).startswith(('http://', 'https://')):
+                response = requests.get(source, stream=True)
+                response.raise_for_status()
+                # For 87MB, downloading and decoding is efficient in memory
+                text = response.content.decode('utf-8').lower()
+                return re.findall(r'\w+', text)
             else:
-                color = "#00ff88"
-                
-            corr_html = f"<span style='color:{color};border-bottom:1px solid {color}60'>{corrected}</span>"
-            
-            highlighted_words.append(f"{prefix}{orig_html}{corr_html}{suffix}")
-        else:
-            highlighted_words.append(word)
-            
-    return " ".join(highlighted_words)
+                with open(source, 'r', encoding='utf-8') as f:
+                    return re.findall(r'\w+', f.read().lower())
+        except Exception as e:
+            st.error(f"Error loading corpus from {source}: {e}")
+            return []
 
-def create_html_correction_table(corrections):
-    """
-    Generates a Cyberpunk-styled HTML table for corrections.
-    """
-    if not corrections:
-        return "<div style='color:#4a7a9b;font-family:Share Tech Mono,monospace;'>NO ANOMALIES DETECTED</div>"
-    
-    rows = ""
-    for c in corrections:
-        badge_color = "#ff4444" if c['type'] == "Non-word" else "#7b2fff"
-        badge_text = c['type'].upper()
-        
-        rows += f"""
-        <tr style='border-bottom:1px solid #0d2844;'>
-            <td style='padding:12px;color:#ff4444;font-family:Share Tech Mono,monospace;'>{c['original']}</td>
-            <td style='padding:12px;color:#00ff88;font-family:Share Tech Mono,monospace;'>{c['corrected']}</td>
-            <td style='padding:12px;'>
-                <span style='background:{badge_color}20;color:{badge_color};border:1px solid {badge_color}40;
-                padding:2px 8px;border-radius:3px;font-size:9px;letter-spacing:1px;'>{badge_text}</span>
-            </td>
-            <td style='padding:12px;color:#00c8ff;font-family:Orbitron,monospace;font-size:10px;'>{int(c['confidence']*100)}%</td>
-        </tr>
+    def normalize_word(self, word):
+        """Reduces sequences of 3 or more repeated characters to 2 (e.g., 'heelllooooo' -> 'helloo')."""
+        return re.sub(r'(.)\1{2,}', r'\1\1', word)
+
+    def P(self, word):
+        """Probability of 'word'."""
+        return self.word_counts[word] / self.total_words if self.total_words > 0 else 0
+
+    def correction(self, word):
+        """Most probable spelling correction for word."""
+        return max(self.candidates(word), key=self.P)
+
+    def candidates(self, word):
+        """Generate possible spelling corrections for word."""
+        return (self.known([word]) or self.known(self.edits1(word)) or self.known(self.edits2(word)) or [word])
+
+    def known(self, words):
+        """The subset of `words` that appear in the dictionary of word_counts."""
+        return set(w for w in words if w in self.word_counts)
+
+    def edits1(self, word):
+        """All edits that are one edit away from `word`."""
+        letters    = 'abcdefghijklmnopqrstuvwxyz'
+        splits     = [(word[:i], word[i:])    for i in range(len(word) + 1)]
+        deletes    = [L + R[1:]               for L, R in splits if R]
+        transposes = [L + R[1] + R[0] + R[2:] for L, R in splits if len(R)>1]
+        replaces   = [L + c + R[1:]           for L, R in splits if R for c in letters]
+        inserts    = [L + c + R               for L, R in splits for c in letters]
+        return set(deletes + transposes + replaces + inserts)
+
+    def edits2(self, word):
+        """All edits that are two edits away from `word`."""
+        return (e2 for e1 in self.edits1(word) for e2 in self.edits1(e1))
+
+    def get_correction(self, word):
         """
-    
-    table_html = f"""
-    <table style='width:100%;border-collapse:collapse;background:#0a1628;border:1px solid #0d2844;'>
-        <thead>
-            <tr style='background:#0d284440;text-align:left;'>
-                <th style='padding:12px;color:#4a7a9b;font-family:Share Tech Mono,monospace;font-size:10px;'>ORIGINAL WORD</th>
-                <th style='padding:12px;color:#4a7a9b;font-family:Share Tech Mono,monospace;font-size:10px;'>CORRECTED WORD</th>
-                <th style='padding:12px;color:#4a7a9b;font-family:Share Tech Mono,monospace;font-size:10px;'>ERROR TYPE</th>
-                <th style='padding:12px;color:#4a7a9b;font-family:Share Tech Mono,monospace;font-size:10px;'>CONFIDENCE</th>
-            </tr>
-        </thead>
-        <tbody>
-            {rows}
-        </tbody>
-    </table>
-    """
-    return table_html
+        Returns (corrected_word, confidence, is_error)
+        Always returns a tuple, never None.
+        """
+        try:
+            word = word.lower()
+            if word in self.word_counts:
+                return word, 1.0, False
+            
+            # Apply normalization for unknown words with repeated characters
+            normalized = self.normalize_word(word)
+            if normalized != word:
+                word = normalized
+            
+            candidates = self.candidates(word)
+            if not candidates:
+                return word, 0, False
+                
+            best_candidate = max(candidates, key=self.P)
+            # Calculate simple confidence
+            total_p = sum(self.P(c) for c in candidates)
+            confidence = self.P(best_candidate) / total_p if total_p > 0 else 0
+            
+            return best_candidate, round(confidence, 4), True
+        except Exception:
+            # If anything fails, return original word
+            return word, 0, False
 
-def create_correction_table(corrections):
-    """
-    Converts correction list to a DataFrame for display.
-    """
-    if not corrections:
-        return pd.DataFrame(columns=["Original Word", "Corrected Word", "Error Type", "Confidence"])
-    
-    # We only take the first 4 fields as requested
-    table_data = []
-    for c in corrections:
-        table_data.append({
-            "Original Word": c['original'],
-            "Corrected Word": c['corrected'],
-            "Error Type": c['type'],
-            "Confidence": c['confidence']
-        })
-    
-    return pd.DataFrame(table_data)
-
-def calculate_accuracy(total_words, errors_found):
-    """
-    Rough accuracy calculation for checking spelling errors.
-    """
-    if total_words == 0:
-        return 100.0
-    return round(((total_words - errors_found) / total_words) * 100, 2)
+    def correct(self, word):
+        """Alias for correction() for compatibility."""
+        return self.correction(word)
